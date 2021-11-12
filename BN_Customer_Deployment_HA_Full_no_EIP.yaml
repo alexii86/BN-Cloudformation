@@ -1,0 +1,308 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS Cloud Formation template to launch BorderNet
+Parameters:
+  AvailabilityZone:
+    Description: select the Availability Zone to launch the Instance
+    Type: 'AWS::EC2::AvailabilityZone::Name'
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: 192.168.0.0/16
+    Private-Subnet:
+      CIDR: 192.168.1.0/24
+    Public-Subnet:
+      CIDR: 192.168.2.0/24
+    MGMT-Subnet:
+      CIDR: 192.168.3.0/24
+  RegionMap:
+    eu-west-3:
+      ami: ami-0eb2776024c63608a
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - VPC
+        - CIDR
+      Tags:
+        - Key: Name
+          Value: BN_VPC
+  BNHARole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+  RolePolicies:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: root
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'ec2:AssignPrivateIpAddresses'
+              - 'ec2:UnassignPrivateIpAddresses'
+              - 'ec2:DescribeInstances'
+              - 'iam:ListRoles'
+            Effect: Allow
+            Resource: '*'
+      Roles:
+        - !Ref BNHARole
+  BNInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref BNHARole
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+  InternetGatewayAttachement:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - Private-Subnet
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: BN-Private
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - Public-Subnet
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: BN-Public
+  MGMTSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - MGMT-Subnet
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: BN-MGMT
+  BNRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+  InternetRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: InternetGateway
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  AssociateRouteTableWithPublicSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      SubnetId: !Ref PrivateSubnet
+  AssociateRouteTableWithPrivateSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      SubnetId: !Ref PublicSubnet
+  AssociateRouteTableWithMGMTSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      SubnetId: !Ref MGMTSubnet
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: SG With BN Rules
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+  BNSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      IpProtocol: '-1'
+      FromPort: '-1'
+      ToPort: '-1'
+      SourceSecurityGroupId: !Ref SecurityGroup
+      GroupId: !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: BN-SG
+  Eth0BN1:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-MGMT-BN1
+      GroupSet:
+        - !Ref SecurityGroup
+      SecondaryPrivateIpAddressCount: 1
+      SourceDestCheck: 'true'
+      SubnetId: !Ref MGMTSubnet
+      Tags:
+        - Key: Name
+          Value: BN-MGMT-BN1
+        - Key: Interface
+          Value: eth0BN1
+  Eth1BN1:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Public-BN1
+      GroupSet:
+        - !Ref SecurityGroup
+      SecondaryPrivateIpAddressCount: 1
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: BN-Public-BN1
+        - Key: Interface
+          Value: eth1BN1
+  Eth2BN1:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Private-BN1
+      GroupSet:
+        - !Ref SecurityGroup
+      SecondaryPrivateIpAddressCount: 1
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PrivateSubnet
+      Tags:
+        - Key: Name
+          Value: BN-Private-BN1
+        - Key: Interface
+          Value: eth2BN1
+  Eth0BN2:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-MGMT-BN2
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref MGMTSubnet
+      Tags:
+        - Key: Name
+          Value: BN-MGMT-BN2
+        - Key: Interface
+          Value: eth0BN2
+  Eth1BN2:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Public-BN2
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: BN-Public-BN2
+        - Key: Interface
+          Value: eth0BN2
+  Eth2BN2:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Private-BN2
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PrivateSubnet
+      Tags:
+        - Key: Name
+          Value: BN-Private-BN2
+        - Key: Interface
+          Value: eth0BN2
+  Ec2Instance1:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      InstanceType: c5.xlarge
+      IamInstanceProfile: !Ref BNInstanceProfile
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref Eth0BN1
+          DeviceIndex: '0'
+        - NetworkInterfaceId: !Ref Eth1BN1
+          DeviceIndex: '1'
+        - NetworkInterfaceId: !Ref Eth2BN1
+          DeviceIndex: '2'
+      ImageId: !FindInMap 
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - ami
+      Tags:
+        - Key: Name
+          Value: Enghouse-BorderNet-HA1
+             
+  Ec2Instance2:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      InstanceType: c5.xlarge
+      IamInstanceProfile: !Ref BNInstanceProfile
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref Eth0BN2
+          DeviceIndex: '0'
+        - NetworkInterfaceId: !Ref Eth1BN2
+          DeviceIndex: '1'
+        - NetworkInterfaceId: !Ref Eth2BN2
+          DeviceIndex: '2'
+      ImageId: !FindInMap 
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - ami
+      Tags:
+        - Key: Name
+          Value: Enghouse-BorderNet-HA2
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+    Description: The id of the created vpc
+  SubnetId:
+    Value: !Ref PublicSubnet
+    Description: The id of the created subnet
+  SecurityGroupId:
+    Value: !Ref SecurityGroup
+    Description: The id of the created subnet
+  RouteTableId:
+    Value: !Ref BNRouteTable
+    Description: The id of the created route table
+  FloatingPublic:
+    Value: !Select 
+      - '0'
+      - !GetAtt 
+        - Eth1BN1
+        - SecondaryPrivateIpAddresses
+    Description: Floating Public IP address for SIP traffic
+  FloatingPrivate:
+    Value: !Select 
+      - '0'
+      - !GetAtt 
+        - Eth2BN1
+        - SecondaryPrivateIpAddresses
+    Description: Floating Private IP address for SIP traffic

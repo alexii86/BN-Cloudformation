@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS Cloud Formation template to launch BorderNet
+Parameters:
+  AvailabilityZone:
+    Description: select the Availability Zone to launch the Instance
+    Type: 'AWS::EC2::AvailabilityZone::Name'
+  InstanceType:
+    Type: String
+    Default: c4.xlarge
+    AllowedValues:
+      - c4.xlarge
+      - c4.2xlarge
+      - c4.4xlarge
+      - c4.8xlarge
+      - c5.xlarge
+      - c5.2xlarge
+      - c5.4xlarge
+      - c5.9xlarge
+      - c5.18xlarge
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  SSHKeyName:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Description: EC2 KeyPair to enable SSH access to SIPP instance
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: 192.168.0.0/16
+    Private-Subnet:
+      CIDR: 192.168.1.0/24
+    Public-Subnet:
+      CIDR: 192.168.2.0/24
+    MGMT-Subnet:
+      CIDR: 192.168.3.0/24
+  RegionMap:
+    us-east-1:
+      ami:  ami-065fe7714f2afe88c
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - VPC
+        - CIDR
+      Tags:
+        - Key: Name
+          Value: BN_VPC
+  BNRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+  RolePolicies:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: root
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'ec2:AssignPrivateIpAddresses'
+              - 'ec2:DescribeInstances'
+              - 'ec2:DescribeNetworkInterfaces'
+              - 'ec2:DescribeAddresses'
+              - 'ec2:DescribeSubnets'
+              - 'ec2:DescribeSecurityGroups'
+              - 'iam:PassRole'
+              - 'iam:ListRoles'
+            Effect: Allow
+            Resource: '*'
+      Roles:
+        - !Ref BNRole
+  BNInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref BNRole
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+  InternetGatewayAttachement:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - Private-Subnet
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: BN-Private
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - Public-Subnet
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: BN-Public
+  MGMTSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - MGMT-Subnet
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: BN-MGMT
+  BNRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+  InternetRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: InternetGateway
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  AssociateRouteTableWithPublicSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      SubnetId: !Ref PrivateSubnet
+  AssociateRouteTableWithPrivateSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      SubnetId: !Ref PublicSubnet
+  AssociateRouteTableWithMGMTSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      SubnetId: !Ref MGMTSubnet
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: EC2 security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref SSHLocation
+      Tags:
+        - Key: Name
+          Value: BN-SG
+  BNEth0:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-MGMT
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref MGMTSubnet
+      Tags:
+        - Key: Name
+          Value: BN-MGMT
+        - Key: Interface
+          Value: eth0
+  BNEth1:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Public
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: BN-Public
+        - Key: Interface
+          Value: eth1
+  BNEth2:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Private
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PrivateSubnet
+      Tags:
+        - Key: Name
+          Value: BN-Private
+        - Key: Interface
+          Value: eth2
+  SIPPEth1:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Public
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: SIPP-Public
+        - Key: Interface
+          Value: eth1
+  SIPPEth2:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: SIPP-Private
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PrivateSubnet
+      Tags:
+        - Key: Name
+          Value: SIPP-Private
+        - Key: Interface
+          Value: eth2  
+  BNInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref BNInstanceProfile
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref BNEth0
+          DeviceIndex: '0'
+        - NetworkInterfaceId: !Ref BNEth1
+          DeviceIndex: '1'
+        - NetworkInterfaceId: !Ref BNEth2
+          DeviceIndex: '2'
+      ImageId: !FindInMap 
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - ami
+      Tags:
+        - Key: Name
+          Value: Dialogic-BorderNet
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #cloud-boothook
+              #!/bin/bash -x
+              exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+              #cd /archive/software/
+              #wget https://s3.eu-central-1.amazonaws.com/csversions/bordernet-3.8.0-239.c74.tar.gz
+              #tar -xzvf bordernet-3.8.0-239.c74.tar.gz
+              rm -rf /var/lib/cloud/*
+            - {
+              MyInstanceIPAddress: !GetAtt BNEth0.PrimaryPrivateIpAddress,
+              PeerInstanceIPAddress: !GetAtt BNEth0.PrimaryPrivateIpAddress
+              }
+
+  SIPPInstance:
+    Type: 'AWS::EC2::Instance'
+    DependsOn: EIPAssoc2
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      InstanceType: t2.micro
+      KeyName: !Ref SSHKeyName
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref SIPPEth1
+          DeviceIndex: '0'
+        - NetworkInterfaceId: !Ref SIPPEth2
+          DeviceIndex: '1'
+      ImageId: ami-0de53d8956e8dcf80
+      Tags:
+        - Key: Name
+          Value: SIPP
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              sudo su
+              yum install -y make gcc gcc-c++ ncurses ncurses-devel openssl libnet libpcap libpcap-devel gsl gsl-devel
+              cd /root
+              wget https://github.com/SIPp/sipp/releases/download/v3.5.2/sipp-3.5.2.tar.gz
+              wget https://s3.eu-central-1.amazonaws.com/csversions/stress_sipp.sh
+              chmod +x stress_sipp.sh
+              tar -xzvf sipp-3.5.2.tar.gz
+              cd sipp-3.5.2
+              autoreconf -vifs
+              ./configure --with-pcap
+              make
+              echo PATH=$PATH:/root/sipp-3.5.2/ >> /etc/profile
+              echo export BN=${BNInstanceIPAddress} >> /etc/profile
+              echo export My_Public=${PublicIPAddress} >> /etc/profile
+              echo export My_Private=${PrivateIPAddress} >> /etc/profile
+              /root/stress_sipp.sh
+            - {
+              BNInstanceIPAddress: !GetAtt BNEth0.PrimaryPrivateIpAddress,
+              PublicIPAddress: !GetAtt SIPPEth1.PrimaryPrivateIpAddress,
+              PrivateIPAddress: !GetAtt SIPPEth2.PrimaryPrivateIpAddress
+              } 
+  EIP1:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: vpc
+  EIP2:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: vpc
+  EIPAssoc1:
+    Type: 'AWS::EC2::EIPAssociation'
+    Properties:
+      NetworkInterfaceId: !Ref BNEth0
+      AllocationId: !GetAtt 
+        - EIP1
+        - AllocationId
+      PrivateIpAddress: !GetAtt 
+        - BNEth0
+        - PrimaryPrivateIpAddress
+  EIPAssoc2:
+    Type: 'AWS::EC2::EIPAssociation'
+    Properties:
+      NetworkInterfaceId: !Ref SIPPEth1
+      AllocationId: !GetAtt 
+        - EIP2
+        - AllocationId
+      PrivateIpAddress: !GetAtt 
+        - SIPPEth1
+        - PrimaryPrivateIpAddress
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+    Description: The id of the created vpc
+  SubnetId:
+    Value: !Ref PublicSubnet
+    Description: The id of the created subnet
+  SecurityGroupId:
+    Value: !Ref SecurityGroup
+    Description: The id of the created subnet
+  RouteTableId:
+    Value: !Ref BNRouteTable
+    Description: The id of the created route table
+  EIP1:
+    Value: !Join 
+      - ''
+      - - 'https://'
+        - !Ref EIP1
+    Description: Public MGMT IP address to acess the GUI Management
+  EIP2:
+    Value: !Ref EIP2
+    Description: Public IP address for SIP traffic

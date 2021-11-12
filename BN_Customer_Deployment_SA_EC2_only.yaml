@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS Cloud Formation template to launch BorderNet
+Parameters:
+  AvailabilityZone:
+    Description: select the Availability Zone to launch the Instance
+    Type: 'AWS::EC2::AvailabilityZone::Name'
+  InstanceType:
+    Type: String
+    Default: c4.xlarge
+    AllowedValues:
+      - c4.xlarge
+      - c4.2xlarge
+      - c4.4xlarge
+      - c4.8xlarge
+      - c5.xlarge
+      - c5.2xlarge
+      - c5.4xlarge
+      - c5.9xlarge
+      - c5.18xlarge
+  MGMTSubnet:
+    Description: Choose the MGMT subnet to attach with the EC2 Instance
+    Type: 'AWS::EC2::Subnet::Id'
+  PublicSubnet:
+    Description: Choose the Public subnet to attach with the EC2 Instance
+    Type: 'AWS::EC2::Subnet::Id'
+  PrivateSubnet:
+    Description: Choose the Private subnet to attach with the EC2 Instance
+    Type: 'AWS::EC2::Subnet::Id'
+  SecurityGroupID:
+    Description: Select the Security Group for EC2 Instance
+    Type: 'AWS::EC2::SecurityGroup::Id'
+  SSHKeyName:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Description: EC2 KeyPair to enable SSH access to the instance
+Mappings:
+  RegionMap:
+    us-east-1:
+      ami: ami-05862efd9a72abc78
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: Network Configuration
+        Parameters:
+          - AvailabilityZone
+          - InstanceType
+          - MGMTSubnet
+          - PublicSubnet
+          - PrivateSubnet
+          - SecurityGroupID
+    ParameterLabels:
+      SecurityGroupID:
+        default: SecurityGroup
+Resources:
+  BNHARole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+  RolePolicies:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: root
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'ec2:AssignPrivateIpAddresses'
+              - 'ec2:DescribeInstances'
+              - 'iam:ListRoles'
+            Effect: Allow
+            Resource: '*'
+      Roles:
+        - !Ref BNHARole
+  BNInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref BNHARole
+  Eth0:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-MGMT
+      GroupSet:
+        - !Ref SecurityGroupID
+      SourceDestCheck: 'true'
+      SubnetId: !Ref MGMTSubnet
+      Tags:
+        - Key: Name
+          Value: BN-MGMT
+        - Key: Interface
+          Value: eth0
+  Eth1:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Public
+      GroupSet:
+        - !Ref SecurityGroupID
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: BN-Public
+        - Key: Interface
+          Value: eth1
+  Eth2:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Private
+      GroupSet:
+        - !Ref SecurityGroupID
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PrivateSubnet
+      Tags:
+        - Key: Name
+          Value: BN-Private
+        - Key: Interface
+          Value: eth2
+  Ec2Instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref BNInstanceProfile
+      KeyName: !Ref SSHKeyName
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref Eth0
+          DeviceIndex: '0'
+        - NetworkInterfaceId: !Ref Eth1
+          DeviceIndex: '1'
+        - NetworkInterfaceId: !Ref Eth2
+          DeviceIndex: '2'
+      ImageId: !FindInMap 
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - ami
+      Tags:
+        - Key: Name
+          Value: Dialogic-BorderNet
+Outputs:
+  EC2InstanceID:
+    Value: !Ref Ec2Instance
+    Description: The Instance ID of the created Ec2 Instance

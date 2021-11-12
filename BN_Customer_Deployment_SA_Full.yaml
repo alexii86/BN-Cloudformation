@@ -1,0 +1,291 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS Cloud Formation template to launch BorderNet
+Parameters:
+  AvailabilityZone:
+    Description: select the Availability Zone to launch the Instance
+    Type: 'AWS::EC2::AvailabilityZone::Name'
+  InstanceType:
+    Type: String
+    Default: c4.xlarge
+    AllowedValues:
+      - c4.xlarge
+      - c4.2xlarge
+      - c4.4xlarge
+      - c4.8xlarge
+      - c5.xlarge
+      - c5.2xlarge
+      - c5.4xlarge
+      - c5.9xlarge
+      - c5.18xlarge
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  SSHKeyName:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Description: EC2 KeyPair to enable SSH access to the instance
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: 192.168.0.0/16
+    Private-Subnet:
+      CIDR: 192.168.1.0/24
+    Public-Subnet:
+      CIDR: 192.168.2.0/24
+    MGMT-Subnet:
+      CIDR: 192.168.3.0/24
+  RegionMap:
+    us-east-1:
+      ami: ami-05862efd9a72abc78
+
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - VPC
+        - CIDR
+      Tags:
+        - Key: Name
+          Value: BN_VPC
+  BNHARole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+  RolePolicies:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: root
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'ec2:AssignPrivateIpAddresses'
+              - 'ec2:DescribeInstances'
+              - 'ec2:DescribeNetworkInterfaces'
+              - 'ec2:DescribeAddresses'
+              - 'ec2:DescribeSubnets'
+              - 'ec2:DescribeSecurityGroups'
+              - 'iam:PassRole'
+              - 'iam:ListRoles'
+            Effect: Allow
+            Resource: '*'
+      Roles:
+        - !Ref BNHARole
+  BNInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: BNrole
+      Path: /
+      Roles:
+        - !Ref BNHARole
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+  InternetGatewayAttachement:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - Private-Subnet
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: BN-Private
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - Public-Subnet
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: BN-Public
+  MGMTSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !FindInMap 
+        - SubnetConfig
+        - MGMT-Subnet
+        - CIDR
+      AvailabilityZone: !Ref AvailabilityZone
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: BN-MGMT
+  BNRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+  InternetRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: InternetGateway
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  AssociateRouteTableWithPublicSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      SubnetId: !Ref PrivateSubnet
+  AssociateRouteTableWithPrivateSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      SubnetId: !Ref PublicSubnet
+  AssociateRouteTableWithMGMTSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref BNRouteTable
+      SubnetId: !Ref MGMTSubnet
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: EC2 security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref SSHLocation
+      Tags:
+        - Key: Name
+          Value: BN-SG
+  Eth0:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-MGMT
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref MGMTSubnet
+      Tags:
+        - Key: Name
+          Value: BN-MGMT
+        - Key: Interface
+          Value: eth0
+  Eth1:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Public
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: BN-Public
+        - Key: Interface
+          Value: eth1
+  Eth2:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      Description: BN-Private
+      GroupSet:
+        - !Ref SecurityGroup
+      SourceDestCheck: 'true'
+      SubnetId: !Ref PrivateSubnet
+      Tags:
+        - Key: Name
+          Value: BN-Private
+        - Key: Interface
+          Value: eth2
+  Ec2Instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref BNInstanceProfile
+      KeyName: !Ref SSHKeyName
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref Eth0
+          DeviceIndex: '0'
+        - NetworkInterfaceId: !Ref Eth1
+          DeviceIndex: '1'
+        - NetworkInterfaceId: !Ref Eth2
+          DeviceIndex: '2'
+      ImageId: !FindInMap 
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - ami
+      Tags:
+        - Key: Name
+          Value: Dialogic-BorderNet
+  EIP1:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: vpc
+  EIP2:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: vpc
+  EIPAssoc1:
+    Type: 'AWS::EC2::EIPAssociation'
+    Properties:
+      NetworkInterfaceId: !Ref Eth0
+      AllocationId: !GetAtt 
+        - EIP1
+        - AllocationId
+      PrivateIpAddress: !GetAtt 
+        - Eth0
+        - PrimaryPrivateIpAddress
+  EIPAssoc2:
+    Type: 'AWS::EC2::EIPAssociation'
+    Properties:
+      NetworkInterfaceId: !Ref Eth1
+      AllocationId: !GetAtt 
+        - EIP2
+        - AllocationId
+      PrivateIpAddress: !GetAtt 
+        - Eth1
+        - PrimaryPrivateIpAddress
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+    Description: The id of the created vpc
+  SubnetId:
+    Value: !Ref PublicSubnet
+    Description: The id of the created subnet
+  SecurityGroupId:
+    Value: !Ref SecurityGroup
+    Description: The id of the created subnet
+  RouteTableId:
+    Value: !Ref BNRouteTable
+    Description: The id of the created route table
+  EIP1:
+    Value: !Join 
+      - ''
+      - - 'https://'
+        - !Ref EIP1
+    Description: Public MGMT IP address to acess the GUI Management
+  EIP2:
+    Value: !Ref EIP2
+    Description: Public IP address for SIP traffic
